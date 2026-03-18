@@ -2,10 +2,10 @@
  * @type {import("@opencode-ai/plugin").Plugin}
  */
 export async function CopilotAuthPlugin() {
-  const CLIENT_ID = "Ov23ctDVkRmgkPke0Mmm";
+  const CLIENT_ID = "Iv1.b507a08c87ecfe98";
   const API_VERSION = "2025-05-01";
   const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000;
-  const OAUTH_SCOPES = "read:user read:org repo gist";
+  const OAUTH_SCOPES = "read:user";
   const RESPONSES_API_ALTERNATE_INPUT_TYPES = [
     "file_search_call",
     "computer_call",
@@ -29,7 +29,8 @@ export async function CopilotAuthPlugin() {
   }
 
   function getUrls(domain) {
-    const apiDomain = domain === "github.com" ? "api.github.com" : `api.${domain}`;
+    const apiDomain =
+      domain === "github.com" ? "api.github.com" : `api.${domain}`;
     return {
       DEVICE_CODE_URL: `https://${domain}/login/device/code`,
       ACCESS_TOKEN_URL: `https://${domain}/login/oauth/access_token`,
@@ -38,7 +39,9 @@ export async function CopilotAuthPlugin() {
   }
 
   async function fetchEntitlement(info) {
-    const domain = info.enterpriseUrl ? normalizeDomain(info.enterpriseUrl) : "github.com";
+    const domain = info.enterpriseUrl
+      ? normalizeDomain(info.enterpriseUrl)
+      : "github.com";
     const urls = getUrls(domain);
 
     const response = await fetch(urls.COPILOT_ENTITLEMENT_URL, {
@@ -107,28 +110,25 @@ export async function CopilotAuthPlugin() {
           },
         },
         limit: {
-          context:
-            limits.max_context_window_tokens
-            ?? opus4_6.limit.context,
+          context: limits.max_context_window_tokens ?? opus4_6.limit.context,
           input:
-            limits.max_prompt_tokens
-            ?? opus4_6.limit.input
-            ?? limits.max_context_window_tokens,
+            limits.max_prompt_tokens ??
+            opus4_6.limit.input ??
+            limits.max_context_window_tokens,
           output:
-            limits.max_output_tokens
-            ?? limits.max_non_streaming_output_tokens
-            ?? opus4_6.limit.output,
+            limits.max_output_tokens ??
+            limits.max_non_streaming_output_tokens ??
+            opus4_6.limit.output,
         },
         capabilities: {
           ...structuredClone(opus4_6.capabilities),
           reasoning:
-            opus4_6.capabilities.reasoning
-            || !!supports.adaptive_thinking
-            || typeof supports.max_thinking_budget === "number"
-            || Array.isArray(supports.reasoning_effort),
+            opus4_6.capabilities.reasoning ||
+            !!supports.adaptive_thinking ||
+            typeof supports.max_thinking_budget === "number" ||
+            Array.isArray(supports.reasoning_effort),
           attachment: opus4_6.capabilities.attachment || vision,
-          toolcall:
-            opus4_6.capabilities.toolcall || !!supports.tool_calls,
+          toolcall: opus4_6.capabilities.toolcall || !!supports.tool_calls,
           input: {
             ...structuredClone(opus4_6.capabilities.input),
             image: opus4_6.capabilities.input.image || vision,
@@ -156,22 +156,21 @@ export async function CopilotAuthPlugin() {
       const vision = !!supports.vision || !!limits.vision;
 
       model.limit.context =
-        limits.max_context_window_tokens
-        ?? model.limit.context;
+        limits.max_context_window_tokens ?? model.limit.context;
       model.limit.input =
-        limits.max_prompt_tokens
-        ?? model.limit.input
-        ?? limits.max_context_window_tokens;
+        limits.max_prompt_tokens ??
+        model.limit.input ??
+        limits.max_context_window_tokens;
       model.limit.output =
-        limits.max_output_tokens
-        ?? limits.max_non_streaming_output_tokens
-        ?? model.limit.output;
+        limits.max_output_tokens ??
+        limits.max_non_streaming_output_tokens ??
+        model.limit.output;
 
       model.capabilities.reasoning =
-        model.capabilities.reasoning
-        || !!supports.adaptive_thinking
-        || typeof supports.max_thinking_budget === "number"
-        || Array.isArray(supports.reasoning_effort);
+        model.capabilities.reasoning ||
+        !!supports.adaptive_thinking ||
+        typeof supports.max_thinking_budget === "number" ||
+        Array.isArray(supports.reasoning_effort);
       model.capabilities.attachment = model.capabilities.attachment || vision;
       model.capabilities.toolcall =
         model.capabilities.toolcall || !!supports.tool_calls;
@@ -179,13 +178,13 @@ export async function CopilotAuthPlugin() {
       if (vision) {
         model.capabilities.input.image = true;
       }
-
     }
   }
 
   function getConversationMetadata(init) {
     try {
-      const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
+      const body =
+        typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
 
       if (body?.messages) {
         const lastMessage = body.messages[body.messages.length - 1];
@@ -423,8 +422,8 @@ export async function CopilotAuthPlugin() {
                     await new Promise((resolve) =>
                       setTimeout(
                         resolve,
-                        deviceData.interval * 1000
-                          + OAUTH_POLLING_SAFETY_MARGIN_MS,
+                        deviceData.interval * 1000 +
+                          OAUTH_POLLING_SAFETY_MARGIN_MS,
                       ),
                     );
                     continue;
@@ -432,9 +431,9 @@ export async function CopilotAuthPlugin() {
 
                   if (data.error === "slow_down") {
                     const nextInterval =
-                      (typeof data.interval === "number" && data.interval > 0 ?
-                        data.interval
-                      : deviceData.interval + 5) * 1000;
+                      (typeof data.interval === "number" && data.interval > 0
+                        ? data.interval
+                        : deviceData.interval + 5) * 1000;
                     await new Promise((resolve) =>
                       setTimeout(
                         resolve,
@@ -449,8 +448,8 @@ export async function CopilotAuthPlugin() {
                   await new Promise((resolve) =>
                     setTimeout(
                       resolve,
-                      deviceData.interval * 1000
-                        + OAUTH_POLLING_SAFETY_MARGIN_MS,
+                      deviceData.interval * 1000 +
+                        OAUTH_POLLING_SAFETY_MARGIN_MS,
                     ),
                   );
                 }
@@ -465,7 +464,10 @@ export async function CopilotAuthPlugin() {
       if (input.model.api?.npm !== "@ai-sdk/github-copilot") return;
       if (!input.model.id.includes("claude")) return;
 
-      const thinkingBudget = resolveClaudeThinkingBudget(input.model, input.message.variant);
+      const thinkingBudget = resolveClaudeThinkingBudget(
+        input.model,
+        input.message.variant,
+      );
       if (thinkingBudget === undefined) return;
 
       output.options.thinking_budget = thinkingBudget;
