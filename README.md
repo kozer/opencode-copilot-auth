@@ -12,7 +12,7 @@ Add the plugin to your `opencode` config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@kozer/opencode-copilot-cli-auth@0.0.19"
+    "@kozer/opencode-copilot-cli-auth@0.0.20"
   ]
 }
 ```
