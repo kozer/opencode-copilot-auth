@@ -29,8 +29,7 @@ export async function CopilotAuthPlugin() {
   }
 
   function getUrls(domain) {
-    const apiDomain =
-      domain === "github.com" ? "api.github.com" : `api.${domain}`;
+    const apiDomain = domain === "github.com" ? "api.github.com" : `api.${domain}`;
     return {
       DEVICE_CODE_URL: `https://${domain}/login/device/code`,
       ACCESS_TOKEN_URL: `https://${domain}/login/oauth/access_token`,
@@ -39,9 +38,7 @@ export async function CopilotAuthPlugin() {
   }
 
   async function fetchEntitlement(info) {
-    const domain = info.enterpriseUrl
-      ? normalizeDomain(info.enterpriseUrl)
-      : "github.com";
+    const domain = info.enterpriseUrl ? normalizeDomain(info.enterpriseUrl) : "github.com";
     const urls = getUrls(domain);
 
     const response = await fetch(urls.COPILOT_ENTITLEMENT_URL, {
@@ -57,6 +54,12 @@ export async function CopilotAuthPlugin() {
     }
 
     return response.json();
+  }
+
+  async function getBaseURL(info) {
+    if (info.baseUrl) return info.baseUrl;
+    const entitlement = await fetchEntitlement(info);
+    return entitlement?.endpoints?.api;
   }
 
   async function fetchModels(info, baseURL) {
@@ -80,111 +83,160 @@ export async function CopilotAuthPlugin() {
     return Array.isArray(data?.data) ? data.data : [];
   }
 
-  function patchProviderModels(provider, liveModels) {
-    if (!provider?.models) return;
+  function zeroCost() {
+    return {
+      input: 0,
+      output: 0,
+      cache: {
+        read: 0,
+        write: 0,
+      },
+    };
+  }
 
-    const liveById = new Map(liveModels.map((model) => [model.id, model]));
-    const opus4_6 = provider.models["claude-opus-4.6"];
-    const opus4_6_1m = liveById.get("claude-opus-4.6-1m");
+  function isLiveChatModel(model) {
+    return model?.capabilities?.type === "chat";
+  }
 
-    if (opus4_6 && opus4_6_1m && !provider.models["claude-opus-4.6-1m"]) {
-      const limits = opus4_6_1m.capabilities?.limits ?? {};
-      const supports = opus4_6_1m.capabilities?.supports ?? {};
-      const vision = !!supports.vision || !!limits.vision;
+  function isPickerModel(model) {
+    return isLiveChatModel(model) && model?.model_picker_enabled !== false;
+  }
 
-      provider.models["claude-opus-4.6-1m"] = {
-        ...structuredClone(opus4_6),
-        id: "claude-opus-4.6-1m",
-        api: {
-          ...opus4_6.api,
-          id: "claude-opus-4.6-1m",
+  function getReleaseDate(id, version, fallback = "") {
+    if (typeof version === "string" && version.startsWith(`${id}-`)) {
+      return version.slice(id.length + 1);
+    }
+    return version || fallback;
+  }
+
+  function createProviderModel(existing, live, baseURL) {
+    const limits = live.capabilities?.limits ?? {};
+    const supports = live.capabilities?.supports ?? {};
+    const vision = !!supports.vision || !!limits.vision;
+    const reasoning =
+      existing?.capabilities?.reasoning ??
+      (!!supports.adaptive_thinking ||
+        typeof supports.max_thinking_budget === "number" ||
+        Array.isArray(supports.reasoning_effort));
+
+    return {
+      ...structuredClone(existing ?? {}),
+      id: live.id,
+      api: {
+        ...(existing?.api ?? {}),
+        id: live.id,
+        url: baseURL,
+        npm: "@ai-sdk/github-copilot",
+      },
+      name: live.name ?? existing?.name ?? live.id,
+      family: live.capabilities?.family ?? existing?.family ?? "",
+      cost: zeroCost(),
+      limit: {
+        context: limits.max_context_window_tokens ?? existing?.limit?.context ?? 0,
+        input:
+          limits.max_prompt_tokens ?? existing?.limit?.input ?? limits.max_context_window_tokens,
+        output:
+          limits.max_output_tokens ??
+          limits.max_non_streaming_output_tokens ??
+          existing?.limit?.output ??
+          0,
+      },
+      capabilities: {
+        temperature: existing?.capabilities?.temperature ?? true,
+        reasoning,
+        attachment: existing?.capabilities?.attachment ?? vision,
+        toolcall: !!supports.tool_calls,
+        input: {
+          text: existing?.capabilities?.input?.text ?? true,
+          audio: existing?.capabilities?.input?.audio ?? false,
+          image: existing?.capabilities?.input?.image ?? vision,
+          video: existing?.capabilities?.input?.video ?? false,
+          pdf: existing?.capabilities?.input?.pdf ?? false,
         },
-        name: "Claude Opus 4.6 (1M context)",
-        family: opus4_6_1m.capabilities?.family ?? opus4_6.family,
-        cost: {
-          input: 0,
-          output: 0,
-          cache: {
-            read: 0,
-            write: 0,
+        output: {
+          text: existing?.capabilities?.output?.text ?? true,
+          audio: existing?.capabilities?.output?.audio ?? false,
+          image: existing?.capabilities?.output?.image ?? false,
+          video: existing?.capabilities?.output?.video ?? false,
+          pdf: existing?.capabilities?.output?.pdf ?? false,
+        },
+        interleaved: existing?.capabilities?.interleaved ?? false,
+      },
+      options: existing?.options ?? {},
+      headers: existing?.headers ?? {},
+      release_date: getReleaseDate(live.id, live.version, existing?.release_date ?? ""),
+      variants: existing?.variants ?? {},
+      status: "active",
+    };
+  }
+
+  function buildProviderModels(existingModels, liveModels, baseURL) {
+    const existingById = new Map(
+      Object.values(existingModels ?? {}).map((model) => [model?.api?.id ?? model?.id, model]),
+    );
+
+    return Object.fromEntries(
+      liveModels
+        .filter(isPickerModel)
+        .map((model) => [
+          model.id,
+          createProviderModel(existingById.get(model.id), model, baseURL),
+        ]),
+    );
+  }
+
+  function normalizeExistingModels(existingModels, baseURL) {
+    return Object.fromEntries(
+      Object.entries(existingModels ?? {}).map(([id, model]) => [
+        id,
+        {
+          ...structuredClone(model),
+          cost: zeroCost(),
+          api: {
+            ...model.api,
+            url: baseURL ?? model.api?.url,
+            npm: "@ai-sdk/github-copilot",
           },
         },
-        limit: {
-          context: limits.max_context_window_tokens ?? opus4_6.limit.context,
-          input:
-            limits.max_prompt_tokens ??
-            opus4_6.limit.input ??
-            limits.max_context_window_tokens,
-          output:
-            limits.max_output_tokens ??
-            limits.max_non_streaming_output_tokens ??
-            opus4_6.limit.output,
-        },
-        capabilities: {
-          ...structuredClone(opus4_6.capabilities),
-          reasoning:
-            opus4_6.capabilities.reasoning ||
-            !!supports.adaptive_thinking ||
-            typeof supports.max_thinking_budget === "number" ||
-            Array.isArray(supports.reasoning_effort),
-          attachment: opus4_6.capabilities.attachment || vision,
-          toolcall: opus4_6.capabilities.toolcall || !!supports.tool_calls,
-          input: {
-            ...structuredClone(opus4_6.capabilities.input),
-            image: opus4_6.capabilities.input.image || vision,
-          },
-        },
-      };
+      ]),
+    );
+  }
+
+  async function resolveProviderModels(existingModels, auth) {
+    const baseURL = auth ? await getBaseURL(auth) : undefined;
+    if (!auth || auth.type !== "oauth" || !baseURL) {
+      return normalizeExistingModels(existingModels, baseURL);
     }
 
-    for (const model of Object.values(provider.models)) {
-      model.cost = {
-        input: 0,
-        output: 0,
-        cache: {
-          read: 0,
-          write: 0,
-        },
-      };
-      model.api.npm = "@ai-sdk/github-copilot";
+    const liveModels = await fetchModels(auth, baseURL);
+    return buildProviderModels(existingModels, liveModels, baseURL);
+  }
 
-      const live = liveById.get(model.id);
-      if (!live) continue;
+  function getHeader(headers, name) {
+    if (!headers) return undefined;
+    const target = name.toLowerCase();
 
-      const limits = live.capabilities?.limits ?? {};
-      const supports = live.capabilities?.supports ?? {};
-      const vision = !!supports.vision || !!limits.vision;
+    if (typeof Headers !== "undefined" && headers instanceof Headers) {
+      return headers.get(name) ?? headers.get(target) ?? undefined;
+    }
 
-      model.limit.context =
-        limits.max_context_window_tokens ?? model.limit.context;
-      model.limit.input =
-        limits.max_prompt_tokens ??
-        model.limit.input ??
-        limits.max_context_window_tokens;
-      model.limit.output =
-        limits.max_output_tokens ??
-        limits.max_non_streaming_output_tokens ??
-        model.limit.output;
+    if (Array.isArray(headers)) {
+      const found = headers.find(([key]) => String(key).toLowerCase() === target);
+      return found?.[1];
+    }
 
-      model.capabilities.reasoning =
-        model.capabilities.reasoning ||
-        !!supports.adaptive_thinking ||
-        typeof supports.max_thinking_budget === "number" ||
-        Array.isArray(supports.reasoning_effort);
-      model.capabilities.attachment = model.capabilities.attachment || vision;
-      model.capabilities.toolcall =
-        model.capabilities.toolcall || !!supports.tool_calls;
-
-      if (vision) {
-        model.capabilities.input.image = true;
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === target) {
+        return value;
       }
     }
+
+    return undefined;
   }
 
   function getConversationMetadata(init) {
     try {
-      const body =
-        typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
 
       if (body?.messages) {
         const lastMessage = body.messages[body.messages.length - 1];
@@ -194,9 +246,7 @@ export async function CopilotAuthPlugin() {
               Array.isArray(message.content) &&
               message.content.some((part) => part.type === "image_url"),
           ),
-          isAgent:
-            lastMessage?.role &&
-            ["tool", "assistant"].includes(lastMessage.role),
+          isAgent: lastMessage?.role && ["tool", "assistant"].includes(lastMessage.role),
         };
       }
 
@@ -223,6 +273,7 @@ export async function CopilotAuthPlugin() {
   }
 
   function buildHeaders(init, info, isVision, isAgent) {
+    const explicitInitiator = getHeader(init?.headers, "x-initiator");
     const headers = {
       ...(init?.headers ?? {}),
       Authorization: `Bearer ${info.refresh}`,
@@ -230,7 +281,7 @@ export async function CopilotAuthPlugin() {
       "Openai-Intent": "conversation-agent",
       "User-Agent": "opencode-copilot-cli-auth/0.0.16",
       "X-GitHub-Api-Version": API_VERSION,
-      "X-Initiator": isAgent ? "agent" : "user",
+      "X-Initiator": explicitInitiator ?? (isAgent ? "agent" : "user"),
       "X-Interaction-Id": crypto.randomUUID(),
       "X-Interaction-Type": "conversation-agent",
       "X-Request-Id": crypto.randomUUID(),
@@ -242,6 +293,7 @@ export async function CopilotAuthPlugin() {
 
     delete headers["x-api-key"];
     delete headers["authorization"];
+    delete headers["x-initiator"];
 
     return headers;
   }
@@ -252,26 +304,24 @@ export async function CopilotAuthPlugin() {
   }
 
   return {
+    provider: {
+      id: "github-copilot",
+      models: async (provider, ctx) => {
+        try {
+          return await resolveProviderModels(provider.models, ctx.auth);
+        } catch (error) {
+          console.warn("[opencode-copilot-cli-auth] Failed to sync live Copilot models.", error);
+          return normalizeExistingModels(provider.models);
+        }
+      },
+    },
     auth: {
       provider: "github-copilot",
-      loader: async (getAuth, provider) => {
+      loader: async (getAuth) => {
         const info = await getAuth();
         if (!info || info.type !== "oauth") return {};
 
-        let baseURL = info.baseUrl;
-        if (!baseURL) {
-          const entitlement = await fetchEntitlement(info);
-          baseURL = entitlement?.endpoints?.api;
-        }
-
-        if (baseURL) {
-          try {
-            const liveModels = await fetchModels(info, baseURL);
-            patchProviderModels(provider, liveModels);
-          } catch {}
-        } else {
-          patchProviderModels(provider, []);
-        }
+        const baseURL = await getBaseURL(info);
 
         return {
           ...(baseURL && { baseURL }),
@@ -323,9 +373,7 @@ export async function CopilotAuthPlugin() {
               validate: (value) => {
                 if (!value) return "URL or domain is required";
                 try {
-                  const url = value.includes("://")
-                    ? new URL(value)
-                    : new URL(`https://${value}`);
+                  const url = value.includes("://") ? new URL(value) : new URL(`https://${value}`);
                   if (!url.hostname) {
                     return "Please enter a valid URL or domain";
                   }
@@ -384,8 +432,7 @@ export async function CopilotAuthPlugin() {
                     body: JSON.stringify({
                       client_id: CLIENT_ID,
                       device_code: deviceData.device_code,
-                      grant_type:
-                        "urn:ietf:params:oauth:grant-type:device_code",
+                      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
                     }),
                   });
 
@@ -397,9 +444,7 @@ export async function CopilotAuthPlugin() {
                     const entitlement = await fetchEntitlement({
                       refresh: data.access_token,
                       enterpriseUrl:
-                        actualProvider === "github-copilot-enterprise"
-                          ? domain
-                          : undefined,
+                        actualProvider === "github-copilot-enterprise" ? domain : undefined,
                     });
 
                     const result = {
@@ -422,8 +467,7 @@ export async function CopilotAuthPlugin() {
                     await new Promise((resolve) =>
                       setTimeout(
                         resolve,
-                        deviceData.interval * 1000 +
-                          OAUTH_POLLING_SAFETY_MARGIN_MS,
+                        deviceData.interval * 1000 + OAUTH_POLLING_SAFETY_MARGIN_MS,
                       ),
                     );
                     continue;
@@ -435,10 +479,7 @@ export async function CopilotAuthPlugin() {
                         ? data.interval
                         : deviceData.interval + 5) * 1000;
                     await new Promise((resolve) =>
-                      setTimeout(
-                        resolve,
-                        nextInterval + OAUTH_POLLING_SAFETY_MARGIN_MS,
-                      ),
+                      setTimeout(resolve, nextInterval + OAUTH_POLLING_SAFETY_MARGIN_MS),
                     );
                     continue;
                   }
@@ -448,8 +489,7 @@ export async function CopilotAuthPlugin() {
                   await new Promise((resolve) =>
                     setTimeout(
                       resolve,
-                      deviceData.interval * 1000 +
-                        OAUTH_POLLING_SAFETY_MARGIN_MS,
+                      deviceData.interval * 1000 + OAUTH_POLLING_SAFETY_MARGIN_MS,
                     ),
                   );
                 }
@@ -464,13 +504,50 @@ export async function CopilotAuthPlugin() {
       if (input.model.api?.npm !== "@ai-sdk/github-copilot") return;
       if (!input.model.id.includes("claude")) return;
 
-      const thinkingBudget = resolveClaudeThinkingBudget(
-        input.model,
-        input.message.variant,
-      );
+      const thinkingBudget = resolveClaudeThinkingBudget(input.model, input.message.variant);
       if (thinkingBudget === undefined) return;
 
       output.options.thinking_budget = thinkingBudget;
+    },
+    "chat.headers": async (incoming, output) => {
+      if (!incoming.model.providerID.includes("github-copilot")) return;
+
+      const sdk = input.client;
+      if (!sdk?.session?.message || !sdk?.session?.get) return;
+
+      const parts = await sdk.session
+        .message({
+          path: {
+            id: incoming.message.sessionID,
+            messageID: incoming.message.id,
+          },
+          query: {
+            directory: input.directory,
+          },
+          throwOnError: true,
+        })
+        .catch(() => undefined);
+
+      if (parts?.data?.parts?.some((part) => part.type === "compaction")) {
+        output.headers["x-initiator"] = "agent";
+        return;
+      }
+
+      const session = await sdk.session
+        .get({
+          path: {
+            id: incoming.sessionID,
+          },
+          query: {
+            directory: input.directory,
+          },
+          throwOnError: true,
+        })
+        .catch(() => undefined);
+
+      if (!session?.data?.parentID) return;
+
+      output.headers["x-initiator"] = "agent";
     },
   };
 }
