@@ -1,28 +1,100 @@
+const CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const API_VERSION = "2025-05-01";
+const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000;
+const OAUTH_SCOPES = "read:user";
+const RESPONSES_API_ALTERNATE_INPUT_TYPES = [
+  "file_search_call",
+  "computer_call",
+  "computer_call_output",
+  "web_search_call",
+  "function_call",
+  "function_call_output",
+  "image_generation_call",
+  "code_interpreter_call",
+  "local_shell_call",
+  "local_shell_call_output",
+  "mcp_list_tools",
+  "mcp_approval_request",
+  "mcp_approval_response",
+  "mcp_call",
+  "reasoning",
+];
+const SYNTHETIC_PATTERNS = [
+  /^Tool \w+ returned an attachment:/,
+  /^What did we do so far\?/,
+  /^The following tool was executed by the user$/,
+  /^Tool result:/i,
+  /^Tool output:/i,
+];
+
+function isSynthetic(text) {
+  if (!text || typeof text !== "string") return false;
+  const trimmed = text.trim();
+  return SYNTHETIC_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function hasSyntheticContent(content) {
+  if (typeof content === "string") return isSynthetic(content);
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => isSynthetic(part?.text || part?.content || ""));
+}
+
+function detectAgent(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+
+  const hasNonUser = messages.some(
+    (message) =>
+      ["assistant", "tool"].includes(message?.role) ||
+      RESPONSES_API_ALTERNATE_INPUT_TYPES.includes(message?.type),
+  );
+  if (hasNonUser) return true;
+
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage?.role === "user" && hasSyntheticContent(lastMessage.content)) return true;
+
+  return false;
+}
+
+function detectVision(messages) {
+  return (
+    messages?.some(
+      (message) =>
+        Array.isArray(message?.content) &&
+        message.content.some((part) => part?.type === "image_url" || part?.type === "input_image"),
+    ) ?? false
+  );
+}
+
+function getConversationMetadata(init) {
+  try {
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
+    const messages = body?.messages || body?.input || [];
+
+    return {
+      isVision: detectVision(messages),
+      isAgent: detectAgent(messages),
+    };
+  } catch {
+    return {
+      isVision: false,
+      isAgent: false,
+    };
+  }
+}
+
+export const __testing = {
+  SYNTHETIC_PATTERNS,
+  isSynthetic,
+  hasSyntheticContent,
+  detectAgent,
+  detectVision,
+  getConversationMetadata,
+};
+
 /**
  * @type {import("@opencode-ai/plugin").Plugin}
  */
 export async function CopilotAuthPlugin() {
-  const CLIENT_ID = "Iv1.b507a08c87ecfe98";
-  const API_VERSION = "2025-05-01";
-  const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000;
-  const OAUTH_SCOPES = "read:user";
-  const RESPONSES_API_ALTERNATE_INPUT_TYPES = [
-    "file_search_call",
-    "computer_call",
-    "computer_call_output",
-    "web_search_call",
-    "function_call",
-    "function_call_output",
-    "image_generation_call",
-    "code_interpreter_call",
-    "local_shell_call",
-    "local_shell_call_output",
-    "mcp_list_tools",
-    "mcp_approval_request",
-    "mcp_approval_response",
-    "mcp_call",
-    "reasoning",
-  ];
 
   function normalizeDomain(url) {
     return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -232,44 +304,6 @@ export async function CopilotAuthPlugin() {
     }
 
     return undefined;
-  }
-
-  function getConversationMetadata(init) {
-    try {
-      const body = typeof init?.body === "string" ? JSON.parse(init.body) : init?.body;
-
-      if (body?.messages) {
-        const lastMessage = body.messages[body.messages.length - 1];
-        return {
-          isVision: body.messages.some(
-            (message) =>
-              Array.isArray(message.content) &&
-              message.content.some((part) => part.type === "image_url"),
-          ),
-          isAgent: lastMessage?.role && ["tool", "assistant"].includes(lastMessage.role),
-        };
-      }
-
-      if (body?.input) {
-        const lastInput = body.input[body.input.length - 1];
-        const isAssistant = lastInput?.role === "assistant";
-        const hasAgentType = lastInput?.type
-          ? RESPONSES_API_ALTERNATE_INPUT_TYPES.includes(lastInput.type)
-          : false;
-
-        return {
-          isVision:
-            Array.isArray(lastInput?.content) &&
-            lastInput.content.some((part) => part.type === "input_image"),
-          isAgent: isAssistant || hasAgentType,
-        };
-      }
-    } catch {}
-
-    return {
-      isVision: false,
-      isAgent: false,
-    };
   }
 
   function buildHeaders(init, info, isVision, isAgent) {

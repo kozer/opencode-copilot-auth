@@ -1,6 +1,6 @@
 # opencode-copilot-cli-auth
 
-Package on npm: https://www.npmjs.com/package/@zhzy0077/opencode-copilot-cli-auth
+Package on npm: https://www.npmjs.com/package/@kozer/opencode-copilot-cli-auth
 
 This fork replaces the older GitHub Copilot chat-auth flow with the newer Copilot CLI-style OAuth flow and makes `opencode` use the live Copilot model metadata for your account.
 
@@ -12,7 +12,7 @@ Add the plugin to your `opencode` config:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "@zhzy0077/opencode-copilot-cli-auth@0.0.19"
+    "@kozer/opencode-copilot-cli-auth@0.0.19"
   ]
 }
 ```
@@ -39,6 +39,35 @@ Important: if the file path contains `opencode-copilot-auth`, current `opencode`
 - Token exchange: does not call `/copilot_internal/v2/token`.
 - Request profile: uses the newer `copilot-developer-cli` headers instead of the older chat profile.
 - Model metadata: fetches the live Copilot `/models` response via the plugin `provider.models` hook so the final `opencode` model list comes from the entitlement-backed Copilot API.
+- Synthetic message detection: includes the behavior from [`anomalyco/opencode#8721`](https://github.com/anomalyco/opencode/pull/8721), which builds on `#8393` to avoid excess premium charges when OpenCode emits synthetic user messages during agent/tool continuations.
+
+## Synthetic message detection
+
+This fork also includes the logic proposed in [`anomalyco/opencode#8721`](https://github.com/anomalyco/opencode/pull/8721).
+
+That change fixes the premium-request misclassification described in `#8030` by extending the official plugin work from `#8393`.
+
+The `#8393` plugin logic treated a request as agent-initiated only when the last message was not from the user. That misses OpenCode-generated synthetic user messages such as compaction prompts, tool attachment summaries, and subtask markers.
+
+VSCode Copilot Chat handles this with explicit continuation flags in its internal request flow. OpenCode does not expose equivalent flags, so this fork infers the same intent from conversation history.
+
+The detection rules are:
+
+- If any `assistant` or `tool` message already exists in the conversation, treat the request as `agent`.
+- If the last `user` message matches a known synthetic pattern, treat the request as `agent`.
+- Otherwise, treat the request as `user`.
+
+Synthetic patterns currently detected:
+
+- `What did we do so far?`
+- `Tool X returned an attachment:`
+- `The following tool was executed by the user`
+- `Tool result:`
+- `Tool output:`
+
+This keeps real first-turn user requests premium-billed while preventing synthetic follow-up messages from being billed like fresh user prompts.
+
+The implementation also unifies vision detection across both the Completions and Responses APIs, and the repo includes focused regression tests covering synthetic detection and agent detection.
 
 ## Context window and model limits
 
